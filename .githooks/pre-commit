@@ -1,0 +1,11 @@
+#!/bin/bash
+
+set -e
+echo "-----------------------------"
+echo "| Running Pre-Commit Checks |"
+echo "-----------------------------"
+
+sh -c "pnpm lint"
+
+echo "| Running Test Coverage |"
+sh -c "pnpm migration:refresh"

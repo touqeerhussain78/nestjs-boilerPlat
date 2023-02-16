@@ -1,0 +1,109 @@
+trigger:
+  batch: true
+  branches:
+    include:
+      - master
+
+  paths:
+    include:
+      - "*"
+    exclude:
+      - "README.md"
+
+pr:
+  branches:
+    include:
+      - master
+
+pool:
+  vmImage: "ubuntu-20.04"
+
+stages:
+  - stage: buildPackage
+    displayName: "Build and Package"
+    jobs:
+      - job: build
+        displayName: "Build and Test"
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: "16.x"
+            displayName: "Install Node.js"
+
+          - script: |
+              sudo apt-get install -y mysql-server
+              sudo /usr/bin/install -m 755 -o mysql -g root -d /var/run/mysqld
+              sudo nohup mysqld_safe --socket=/tmp/mysql.sock --skip-networking --skip-mysqlx &
+              sudo mysql -uroot -proot -e "use mysql; update user set authentication_string=PASSWORD('123456') where User='root'; update user set plugin='mysql_native_password' where user;FLUSH PRIVILEGES;"
+              sudo mysql -uroot -p123456 -e 'create database raadr;'
+              mysql --version
+            displayName: "Install MySQL"
+
+          - script: npm -g install pnpm
+            displayName: "Install Package Manager"
+
+          - script: pnpm install --no-frozen-lockfile
+            displayName: "Install Dependencies"
+
+          - script: cp .env.example .env
+            displayName: "Copy environment file"
+
+          - script: pnpm run test:cov
+            displayName: "Check code coverage"
+
+          - script: pnpm run seed:run
+            displayName: "Executing seeders"
+
+          - script: pnpm run test:e2e
+            displayName: "Run end-to-end tests"
+
+          - task: SonarQubePrepare@5
+            displayName: "Prepare SonarQube Analysis"
+            condition: eq(variables['Build.SourceBranchName'], 'master')
+            inputs:
+              SonarQube: "cc-sonarqube"
+              scannerMode: "CLI"
+              configMode: "manual"
+              cliProjectKey: "raadr-api"
+              cliProjectName: "Raadr Api"
+              cliSources: "src"
+              extraProperties: |
+                sonar.sourceEncoding=UTF-8
+                sonar.scm.provider=git
+                sonar.profile=node
+                sonar.coverage.exclusions=test,src/**/*.spec.ts,src/api/*/migrations/*.ts,src/**/*.seeder.ts,src/**/*.factory.ts,src/**/*.enum.ts,src/api/auth/email-verification.service.ts
+                sonar.javascript.lcov.reportPaths=coverage/lcov.info
+                sonar.javascript.coverage.reportPaths=coverage/clover.xml
+                sonar.clover.reportPath=coverage/clover.xml
+
+          - task: SonarQubeAnalyze@5
+            condition: eq(variables['Build.SourceBranchName'], 'master')
+            displayName: "Run SonarQube Analysis"
+
+          - task: SonarQubePublish@5
+            condition: eq(variables['Build.SourceBranchName'], 'master')
+            displayName: "Publish SonarQube Analysis"
+            inputs:
+              pollingTimeoutSec: "300"
+
+          - script: npm run build
+            displayName: "Build Package"
+
+      - job: package
+        displayName: "Package Artifact"
+        dependsOn: build
+        condition: and(succeeded(), eq(variables['Build.SourceBranchName'], 'master'))
+        steps:
+          - task: ArchiveFiles@2
+            inputs:
+              rootFolderOrFile: "$(System.DefaultWorkingDirectory)"
+              includeRootFolder: false
+              archiveType: "zip"
+              archiveFile: "$(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip"
+              replaceExistingArchive: true
+
+          - task: PublishBuildArtifacts@1
+            inputs:
+              PathtoPublish: "$(Build.ArtifactStagingDirectory)/$(Build.BuildId).zip"
+              ArtifactName: "raadr-api"
+              publishLocation: "Container"
